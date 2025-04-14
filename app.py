@@ -169,7 +169,7 @@ def process_large_pdf(file, max_pages_per_chunk=50):
         return ""
 
 
-def summarize_with_llm(text, model="gpt-4o-mini"):
+def summarize_with_llm(text, model="gpt-4o-mini", language="English"):
     """Summarize text using LLM with support for math, code, tables."""
     try:
         if not text or len(text.strip()) < 10:
@@ -177,13 +177,14 @@ def summarize_with_llm(text, model="gpt-4o-mini"):
             return None
 
         st.info(
-            f"Sending {len(text):,} characters to {model} for summarization..."
+            f"Sending {len(text):,} characters to {model} for summarization in {language}..."
         )
 
         prompt = f"""
 You are an expert explainer and summarizer for textbooks. 
 
-Summarize the following section clearly and comprehensively. Preserve the key concepts, examples, and explanations.
+Summarize the following section clearly and comprehensively in {language}. Preserve the key concepts, examples, and explanations.
+Highlight key terms and concepts in bold.
 
 - Use **LaTeX** for math expressions (enclose with $$...$$).
 - Format **code snippets** using Markdown code blocks (e.g., ```python).

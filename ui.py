@@ -208,6 +208,13 @@ def main_ui():
                     )
                     selected_section_key = None
 
+                # Language selection
+                language = st.selectbox(
+                    "Select Language for Summary",
+                    ["English", "Spanish", "French", "German", "Chinese"],
+                    index=0,
+                    help="Choose the language in which you want the summary")
+
                 # Submit button with clear indication
                 submitted = st.form_submit_button("Generate Summary",
                                                   use_container_width=True,
@@ -236,14 +243,14 @@ def main_ui():
                 if summarize_method == "Single Section":
                     # Process single section
                     process_single_section(sections, selected_section_key,
-                                           selected_model)
+                                           selected_model, language)
                 else:
                     # Process all sections
                     process_all_sections(sections, section_keys,
-                                         selected_model)
+                                         selected_model, language)
 
 
-def process_single_section(sections, section_key, model):
+def process_single_section(sections, section_key, model, language):
     """Process a single section and generate its summary"""
     progress_container = st.empty()
     progress_container.info("⏳ Initializing summarization process...")
@@ -299,6 +306,7 @@ def process_single_section(sections, section_key, model):
             generate_and_display_summary(section_text,
                                          section_key,
                                          model,
+                                         language,
                                          container=results_container)
 
         # Final progress update
@@ -312,7 +320,7 @@ def process_single_section(sections, section_key, model):
             st.code(traceback.format_exc())
 
 
-def process_all_sections(sections, section_keys, model):
+def process_all_sections(sections, section_keys, model, language):
     """Process all sections in the extracted range and generate summaries for each"""
     st.write("## 📚 Processing All Sections")
     status_container = st.empty()
@@ -363,6 +371,7 @@ def process_all_sections(sections, section_keys, model):
                 generate_and_display_summary(section_text,
                                              key,
                                              model,
+                                             language,
                                              container=section_containers[key])
 
             except Exception as e:
@@ -392,7 +401,11 @@ def process_all_sections(sections, section_keys, model):
                            mime="text/markdown")
 
 
-def generate_and_display_summary(text, section_key, model, container=None):
+def generate_and_display_summary(text,
+                                 section_key,
+                                 model,
+                                 language,
+                                 container=None):
     """Generate and display a summary for the given text"""
     ctx = container or st
 
@@ -413,7 +426,7 @@ def generate_and_display_summary(text, section_key, model, container=None):
         chunk_summaries = []
         for i, chunk in enumerate(chunks):
             status.info(f"⏳ Summarizing chunk {i+1} of {len(chunks)}...")
-            summary = summarize_with_llm(chunk, model=model)
+            summary = summarize_with_llm(chunk, model=model, language=language)
             if summary:
                 chunk_summaries.append(summary)
 
@@ -428,7 +441,7 @@ def generate_and_display_summary(text, section_key, model, container=None):
         status.empty()
     else:
         with ctx.status("⏳ Generating summary...") as status:
-            summary = summarize_with_llm(text, model=model)
+            summary = summarize_with_llm(text, model=model, language=language)
 
     if summary:
         # Store in session state for download all feature
