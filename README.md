@@ -93,5 +93,6 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 ## Acknowledgments
 
+- Prototyped by Cursor.
 - Thanks to OpenAI for providing the language models.
 - Thanks to the Streamlit community for their support and resources.
