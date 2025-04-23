@@ -2,3 +2,5 @@ openai
 PyMuPDF
 streamlit
 python-dotenv
+wkhtmltopdf
+pdfkit

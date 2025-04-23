@@ -1,12 +1,40 @@
+# ui.py (Updated)
 import streamlit as st
-import fitz  # PyMuPDF
-from app import process_large_pdf, extract_sections_with_llm, summarize_with_llm, chunk_text, summarize_chunks, summarize_merged_summary, render_summary
-import threading
+import fitz
+from app import process_large_pdf, extract_sections_with_llm, summarize_with_llm, chunk_text, render_summary
+from structure_analyzer import extract_toc_and_sample, learn_textbook_structure
 import time
+import pdfkit
 
-# Create a flag for controlling processing
 if 'processing_active' not in st.session_state:
     st.session_state.processing_active = False
+
+
+def summary_to_pdf(summary_text):
+    try:
+        return pdfkit.from_string(summary_text, False)
+    except ImportError:
+        st.warning(
+            "PDF generation requires pdfkit. Install with: pip install pdfkit")
+        return None
+
+
+def download_pdf(summary, file_name):
+    # Markdown download
+    st.download_button(label="📝 Download Summary (Markdown)",
+                       data=summary,
+                       file_name=f"{file_name}.md",
+                       mime="text/markdown")
+
+    # PDF download
+    try:
+        pdf_data = summary_to_pdf(summary)
+        st.download_button(label="📄 Download Summary (PDF)",
+                           data=pdf_data,
+                           file_name=f"{file_name}.pdf",
+                           mime="application/pdf")
+    except Exception as e:
+        st.warning("PDF generation failed. Is wkhtmltopdf installed?")
 
 
 def main_ui():
@@ -15,239 +43,135 @@ def main_ui():
         "Upload a textbook PDF and specify the section range you want to summarize."
     )
 
-    # Sidebar for settings
     with st.sidebar:
         st.header("Settings")
         chapter_prefix = st.text_input(
             "Chapter prefix (optional)",
             help=
-            "Enter only the chapter number (e.g., '16' for chapter 16) to help with section detection. Do not enter a range here."
+            "Enter the chapter number (e.g., '6') to summarize the full chapter."
         )
         llm_model = st.selectbox(
             "LLM Model", ["gpt-4o-mini", "gpt-3.5-turbo"],
             help="Select the language model for summarization")
 
-    # Main area
     uploaded_file = st.file_uploader("Upload a textbook PDF", type="pdf")
     section_range = st.text_input(
         "Enter section range (e.g. 16.1–16.3), end section is non-inclusive:",
-        help="Use the format 'start–end' with an en dash or hyphen")
+        help=
+        "Use format 'start–end' with en dash or hyphen. Leave blank to summarize full chapter if chapter prefix is set."
+    )
 
-    # Validate section range
-    section_range_valid = bool(
-        section_range and
-        ('-' in section_range or '–' in section_range or '.' in section_range))
+    section_range_valid = section_range or chapter_prefix
+
+    start_page = st.number_input("Start Page", min_value=1, step=1)
+    end_page = st.number_input("End Page", min_value=1, step=1)
+
+    if uploaded_file and start_page and end_page and end_page >= start_page:
+        if st.button("📄 Download Selected Chapter (PDF)"):
+            from app import extract_pdf_range  # Make sure this is defined in `app.py`
+            pdf_bytes = extract_pdf_range(uploaded_file, int(start_page),
+                                          int(end_page))
+            st.download_button(label="Download Split PDF",
+                               data=pdf_bytes,
+                               file_name="chapter_extract.pdf",
+                               mime="application/pdf")
 
     if uploaded_file:
-        # Process PDF
-        with st.expander("PDF Processing Details", expanded=False):
-            st.info(
-                "Large PDFs will be processed in chunks to avoid memory issues."
-            )
-
-        # Column layout for process and stop buttons
+        st.info(
+            "Large PDFs will be processed in chunks to avoid memory issues.")
         col1, col2 = st.columns([1, 1])
-
         process_button = col1.button("Process PDF",
                                      disabled=not section_range_valid)
         stop_button = col2.button(
             "Stop Processing", disabled=not st.session_state.processing_active)
-
-        # Show warning if section range is invalid
-        if not section_range_valid and uploaded_file:
-            st.warning(
-                "Please enter a valid section range before processing (e.g., 16.1-16.3)"
-            )
 
         if stop_button:
             st.session_state.processing_active = False
             st.warning("Processing stopped by user")
             st.experimental_rerun()
 
-        if process_button and section_range_valid:
-            # Set the processing flag to active
+        if process_button:
             st.session_state.processing_active = True
-
             with st.spinner("Extracting text from PDF..."):
                 try:
-                    # Open the document
                     doc = fitz.open(stream=uploaded_file.read(),
                                     filetype="pdf")
-                    st.session_state.doc = doc  # Store in session state for later use
+                    st.session_state.doc = doc
 
-                    # Process PDF with stop check
                     full_text = process_large_pdf(uploaded_file)
-
-                    if not st.session_state.processing_active:
-                        st.warning("Processing stopped by user")
-                        return
-
                     st.session_state.full_text = full_text
 
-                    # Extract sections using LLM and ToC
-                    sections, llm_success = extract_sections_with_llm(
-                        doc, section_range, model="gpt-3.5-turbo")
+                    toc_text, sample_text = extract_toc_and_sample(doc)
+                    structure_insight = learn_textbook_structure(
+                        toc_text, sample_text)
+                    st.session_state.structure_insight = structure_insight
 
-                    if not st.session_state.processing_active:
-                        st.warning("Processing stopped by user")
-                        return
+                    if not section_range and chapter_prefix:
+                        st.info(
+                            f"📘 You requested to summarize the entire Chapter {chapter_prefix}."
+                        )
+
+                    sections, llm_success = extract_sections_with_llm(
+                        doc,
+                        section_range=section_range,
+                        structure_insight=structure_insight,
+                        model=llm_model,
+                        chapter_prefix=chapter_prefix)
 
                     if llm_success:
                         st.success("Successfully extracted sections using AI!")
-                    else:
-                        st.error(
-                            "AI extraction failed. Consider manually extracting the sections."
-                        )
-
-                    st.session_state.sections = sections
-
-                    if not sections:
-                        st.error(
-                            "No sections found matching the pattern. Try a different chapter prefix."
-                        )
-                    else:
-                        st.success(
-                            f"Found {len(sections)} sections in the PDF.")
-                        # Display available sections with page ranges
-                        section_keys = list(sections.keys())
-                        section_keys.sort()
-
-                        # Create a formatted display of sections
-                        st.subheader("Available Sections")
-                        cols = st.columns([2, 3, 2])
-                        cols[0].write("**Section**")
-                        cols[1].write("**Title**")
-                        cols[2].write("**PDF Page**")
-
-                        # Display first 10 sections with details
-                        for key in section_keys[:10]:
-                            section = sections[key]
-                            cols[0].write(key)
-
-                            # Check if section has a title or use "Section {key}" as fallback
-                            if isinstance(section,
-                                          dict) and "title" in section:
-                                section_title = section["title"][:50] + (
-                                    "..."
-                                    if len(section["title"]) > 50 else "")
-                            else:
-                                section_title = f"Section {key}"
-                            cols[1].write(section_title)
-
-                            # Display page numbers
-                            if isinstance(section,
-                                          dict) and "approx_pages" in section:
-                                cols[2].write(section["approx_pages"])
-                            elif isinstance(section, int):
-                                # If section is just an integer page number
-                                cols[2].write(
-                                    f"{section+1}"
-                                )  # +1 because PDF pages are 1-indexed
-                            else:
-                                cols[2].write("Unknown")
-
-                        if len(section_keys) > 10:
-                            st.info(
-                                f"... and {len(section_keys) - 10} more sections"
-                            )
-
-                        # Add a note about page numbers
-                        st.caption(
-                            "Note: Page numbers are exact PDF page numbers found in the document."
-                        )
-
-                        # Store sections in session state for later use
                         st.session_state.sections = sections
-                        st.session_state.section_keys = section_keys
+                    else:
+                        st.error(
+                            "AI extraction failed. Try entering a different section range or chapter prefix."
+                        )
 
-                    # Reset processing flag when complete
                     st.session_state.processing_active = False
 
                 except Exception as e:
                     st.error(f"Error during processing: {str(e)}")
-                    import traceback
-                    st.code(traceback.format_exc())
                     st.session_state.processing_active = False
 
-        # Add summarize button OUTSIDE the process button condition
-        if 'sections' in st.session_state and st.session_state.sections:
-            st.write("---")
+    if 'sections' in st.session_state and st.session_state.sections:
+        st.write("---")
+        with st.form("summary_form"):
+            st.write("## Generate Summary")
+            summarize_method = st.radio("Summarization Method",
+                                        ["Single Section", "All Sections"],
+                                        horizontal=True)
+            section_keys = list(st.session_state.sections.keys())
+            section_keys.sort()
 
-            # Use a form to avoid async issues
-            with st.form("summary_form", clear_on_submit=False):
-                st.write("## Generate Summary")
-                st.write("Generate summaries for your extracted sections.")
+            if summarize_method == "Single Section":
+                selected_section = st.selectbox("Section to summarize",
+                                                section_keys)
+            else:
+                selected_section = None
 
-                sections = st.session_state.sections
-                section_keys = list(sections.keys())
-                section_keys.sort()
+            language = st.selectbox(
+                "Language", ["English", "Spanish", "French", "Chinese"])
+            model = st.selectbox("Model", ["gpt-4o-mini", "gpt-3.5-turbo"])
+            submitted = st.form_submit_button("Generate Summary")
 
-                # Model selection
-                selected_model = st.selectbox("Model",
-                                              ["gpt-4o-mini", "gpt-3.5-turbo"],
-                                              index=0)
+        if submitted:
+            if summarize_method == "Single Section":
+                text = st.session_state.sections[selected_section]['content']
+                summary = summarize_with_llm(text, model, language)
+                st.write(f"### Summary of Section {selected_section}")
+                render_summary(summary)
+                download_pdf(summary, f"summary_{selected_section}")
+            else:
+                all_summaries = []
+                for key in section_keys:
+                    text = st.session_state.sections[key]['content']
+                    summary = summarize_with_llm(text, model, language)
+                    if summary:
+                        all_summaries.append(f"## Section {key}\n\n{summary}")
 
-                # Summarization method selection
-                summarize_method = st.radio(
-                    "Summarization Method:",
-                    ["Single Section", "All Sections in Range"],
-                    horizontal=True,
-                    help=
-                    "Choose to summarize one section or all sections in the extracted range"
-                )
-
-                # Section selection (only show if single section is selected)
-                if summarize_method == "Single Section":
-                    selected_section_key = st.selectbox("Section to summarize",
-                                                        section_keys,
-                                                        index=0)
-                else:
-                    # If all sections selected, no need for section dropdown
-                    st.info(
-                        f"Will summarize all {len(section_keys)} sections: {', '.join(section_keys)}"
-                    )
-                    selected_section_key = None
-
-                # Language selection
-                language = st.selectbox(
-                    "Select Language for Summary",
-                    ["English", "Spanish", "French", "German", "Chinese"],
-                    index=0,
-                    help="Choose the language in which you want the summary")
-
-                # Submit button with clear indication
-                submitted = st.form_submit_button("Generate Summary",
-                                                  use_container_width=True,
-                                                  type="primary")
-
-            # Create a placeholder for submission feedback
-            submission_feedback = st.empty()
-
-            # Process outside the form
-            if submitted:
-                # Display prominent visual feedback
-                submission_feedback.success(
-                    "✅ Summary request received! Processing will begin shortly..."
-                )
-
-                # Add a divider
-                st.divider()
-
-                # Clear feedback after 3 seconds
-                time.sleep(1)
-                submission_feedback.empty()
-
-                # Header for results
-                st.subheader("💡 Generating Summaries")
-
-                if summarize_method == "Single Section":
-                    # Process single section
-                    process_single_section(sections, selected_section_key,
-                                           selected_model, language)
-                else:
-                    # Process all sections
-                    process_all_sections(sections, section_keys,
-                                         selected_model, language)
+                combined_summary = "\n\n---\n\n".join(all_summaries)
+                st.write("### All Sections Summary")
+                render_summary(combined_summary)
+                download_pdf(combined_summary, "all_sections_summary")
 
 
 def process_single_section(sections, section_key, model, language):
@@ -430,12 +354,11 @@ def generate_and_display_summary(text,
             if summary:
                 chunk_summaries.append(summary)
 
-        if len(chunk_summaries) > 1:
-            status.info("⏳ Merging summaries from all chunks...")
-            summary = summarize_merged_summary(chunk_summaries, model=model)
+        if chunk_summaries:
+            # Simply combine all chunk summaries with section breaks
+            summary = "\n\n---\n\n".join(chunk_summaries)
         else:
-            summary = chunk_summaries[
-                0] if chunk_summaries else "No summary generated"
+            summary = "No summary generated"
 
         # Clear the status when done
         status.empty()

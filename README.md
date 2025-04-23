@@ -4,16 +4,31 @@ Fast Reader is a Streamlit application designed to process and summarize PDF doc
 
 ## Features
 
+- **Smart Structure Analysis**: Analyzes textbook structure first for more accurate section detection
+- **Precise Section Extraction**: Uses AI and binary search to accurately locate section ranges with validation
+- **Intelligent Chunking**: Smart text segmentation that avoids breaking paragraphs or mathematical expressions
+- **Hierarchical Summarization**: Tree-based approach enables summarizing very long sections without hitting token limits
+- **Multi-format Support**: Handles math expressions (LaTeX), code blocks, and tables in summaries
+- **Batch Processing**: Summarize single sections or entire chapter ranges
 - Extracts sections from PDFs using AI and binary search to accurately locate section ranges.
 - Summarizes text using OpenAI's language models with support for math, code, and tables.
 - Provides a user-friendly interface for uploading PDFs and selecting sections to summarize.
 - Supports batch summarization of multiple sections.
 
+## Key Improvements
+
+| Feature                  | Impact                                                              |
+| ------------------------ | ------------------------------------------------------------------- |
+| Structure analysis first | More accurate section detection across different textbooks          |
+| Smarter chunking         | Avoids breaking paragraphs or math, improves summarization quality  |
+| Tree summarization       | Enables summarizing very long sections without hitting token limits |
+| Section range validation | Catches embedded sub-sections you might have missed                 |
+
 ## Setup Instructions
 
 ### Prerequisites
 
-- Python 3.7+
+- Python 3.10+
 - [Streamlit](https://streamlit.io/)
 - [PyMuPDF](https://pymupdf.readthedocs.io/en/latest/)
 - [OpenAI Python Client](https://github.com/openai/openai-python)
@@ -34,11 +49,11 @@ Fast Reader is a Streamlit application designed to process and summarize PDF doc
    source myenv/bin/activate
    ```
 
-   On Windows use
+   On Windows use:
 
-```bash
-myenv\Scripts\activate
-```
+   ```bash
+   myenv\Scripts\activate
+   ```
 
 3. Install the required packages:
 

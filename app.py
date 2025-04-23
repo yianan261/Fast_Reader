@@ -6,475 +6,201 @@ import os
 from dotenv import load_dotenv
 import tempfile
 from openai import OpenAI
+import io
 
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 client = OpenAI()
 
+# app.py (Updated)
+import streamlit as st
+import fitz  # PyMuPDF
+import os
+import tempfile
+import re
+from dotenv import load_dotenv
+from openai import OpenAI
+from structure_analyzer import extract_toc_and_sample, learn_textbook_structure, smart_chunk_text
+
+load_dotenv()
+openai_api_key = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=openai_api_key)
+
 # --- Utility Functions ---
 
 
-def extract_sections(text, chapter_pattern=None):
-    """
-    Extract sections from text based on chapter patterns.
-    If no pattern is provided, it will try to detect common chapter numbering patterns.
-    """
-    sections = {}
-
-    # Common patterns to try in order of specificity
-    patterns = [
-        # Pattern 1: Standard chapter-section format (e.g., "16.1 Title")
-        r"\b(?:Chapter\s+)?(\d{1,3}\.\d{1,2}(?![0-9]))\s+([^\n]+)",  # Prevents matching decimals
-
-        # Pattern 2: Section numbers with letters (e.g., "16.1a Title")
-        r"\b(?:Chapter\s+)?(\d{1,3}\.\d{1,2}[a-z]?(?![0-9]))\s+([^\n]+)",
-
-        # Pattern 3: Chapter and section separately numbered (e.g., "Chapter 16 Section 1")
-        r"\bChapter\s+(\d{1,3})\s+Section\s+(\d{1,2})(?:\s+|:)([^\n]+)",
-
-        # Pattern 4: Appendix format (e.g., "Appendix A.1")
-        r"\bAppendix\s+([A-Z]\.\d{1,2})\s+([^\n]+)",
-
-        # Pattern 5: Simple numbered sections (e.g., "Section 16")
-        r"\bSection\s+(\d{1,3})(?:\s+|:)([^\n]+)"
-    ]
-
-    # If chapter pattern provided, create a custom pattern
-    if chapter_pattern:
-        # Ensure the pattern matches typical chapter.section format (e.g., 16.1) and not decimals
-        custom_pattern = rf"\b({chapter_pattern}\.\d{{1,2}}(?![0-9]))\s+([^\n]+)"
-        patterns.insert(0, custom_pattern)  # Try this pattern first
-
-    # Try each pattern until we find matches
-    found_matches = False
-    matched_pattern = None
-
-    for pattern_str in patterns:
-        pattern = re.compile(pattern_str)
-        matches = list(pattern.finditer(text))
-
-        if matches:
-            found_matches = True
-            matched_pattern = pattern_str
-            st.info(
-                f"Found {len(matches)} sections using pattern: {pattern_str}")
-
-            # Different handling based on pattern
-            if "Chapter" in pattern_str and "Section" in pattern_str:
-                # Handle "Chapter X Section Y" format
-                for i in range(len(matches)):
-                    start = matches[i].start()
-                    end = matches[i + 1].start() if i + 1 < len(
-                        matches) else len(text)
-                    chapter_num = matches[i].group(1)
-                    section_num = matches[i].group(2)
-                    key = f"{chapter_num}.{section_num}"
-                    title = matches[i].group(3).strip()
-                    content = text[start:end].strip()
-                    # Calculate approximate page numbers based on character position
-                    approx_start_page = start // 3000  # Rough estimate of chars per page
-                    approx_end_page = end // 3000
-                    sections[key] = {
-                        "title":
-                        title,
-                        "content":
-                        content,
-                        "start_pos":
-                        start,
-                        "end_pos":
-                        end,
-                        "approx_pages":
-                        f"{approx_start_page+1}-{approx_end_page+1}"
-                    }
-            else:
-                # Standard handling for other patterns
-                for i in range(len(matches)):
-                    start = matches[i].start()
-                    end = matches[i + 1].start() if i + 1 < len(
-                        matches) else len(text)
-                    key = matches[i].group(1)
-                    title = matches[i].group(2).strip()
-                    content = text[start:end].strip()
-                    # Calculate approximate page numbers
-                    approx_start_page = start // 3000  # Rough estimate of chars per page
-                    approx_end_page = end // 3000
-                    sections[key] = {
-                        "title":
-                        title,
-                        "content":
-                        content,
-                        "start_pos":
-                        start,
-                        "end_pos":
-                        end,
-                        "approx_pages":
-                        f"{approx_start_page+1}-{approx_end_page+1}"
-                    }
-
-            # Found sections, no need to try other patterns
-            break
-
-    return sections, found_matches
-
-
 def process_large_pdf(file, max_pages_per_chunk=50):
-    """Process large PDFs by chunking to avoid memory issues"""
     try:
-        # Create a temporary copy of the file since we need to read it twice
         with tempfile.NamedTemporaryFile(delete=False,
                                          suffix=".pdf") as tmp_file:
             tmp_file.write(file.getvalue())
             tmp_path = tmp_file.name
 
-        # Debug message
         st.info("Starting PDF processing...")
-
-        # Open the file from the temp path
         doc = fitz.open(tmp_path)
         total_pages = len(doc)
         full_text = ""
 
-        # Simple processing without progress bar to avoid NoneType issues
         for i in range(0, total_pages, max_pages_per_chunk):
-            # Check if processing should be stopped
             if hasattr(st.session_state, 'processing_active'
                        ) and not st.session_state.processing_active:
                 st.warning("PDF processing interrupted")
                 doc.close()
-                if os.path.exists(tmp_path):
-                    os.unlink(tmp_path)
+                os.unlink(tmp_path)
                 return ""
-
             end_page = min(i + max_pages_per_chunk, total_pages)
-            chunk_text = ""
-            for page_num in range(i, end_page):
-                chunk_text += doc[page_num].get_text()
+            chunk_text = "".join(
+                [doc[page].get_text() for page in range(i, end_page)])
             full_text += chunk_text
 
-        # Clean up and return
         doc.close()
-        os.unlink(tmp_path)  # Remove the temporary file
+        os.unlink(tmp_path)
         st.success(f"Finished processing {total_pages} pages")
         return full_text
     except Exception as e:
-        # Make sure we clean up even if there's an error
         st.error(f"Error processing PDF: {str(e)}")
-        try:
-            doc.close()
-        except:
-            pass
         if 'tmp_path' in locals() and os.path.exists(tmp_path):
             os.unlink(tmp_path)
         return ""
 
 
 def summarize_with_llm(text, model="gpt-4o-mini", language="English"):
-    """Summarize text using LLM with support for math, code, tables."""
-    try:
-        if not text or len(text.strip()) < 10:
-            st.error("Text is too short or empty to summarize")
-            return None
+    if not text or len(text.strip()) < 10:
+        st.error("Text is too short or empty to summarize")
+        return None
 
-        st.info(
-            f"Sending {len(text):,} characters to {model} for summarization in {language}..."
-        )
-
-        prompt = f"""
-You are an expert explainer and summarizer for textbooks. 
-
-Summarize the following section clearly and comprehensively in {language}. Preserve the key concepts, examples, and explanations.
-Highlight key terms and concepts in bold.
-
-- Use **LaTeX** for math expressions (enclose with $$...$$).
-- Format **code snippets** using Markdown code blocks (e.g., ```python).
-- Retain headings and subheadings if present.
-- Use Markdown tables if needed to summarize comparisons.
-- Highlight important definitions and theorems.
+    st.info(
+        f"Sending {len(text):,} characters to {model} for summarization in {language}..."
+    )
+    prompt = f"""
+You are an expert explainer and summarizer for textbooks.
+Summarize the following section clearly and comprehensively in {language}. Highlight key terms and concepts in bold.
+- Use **LaTeX** for math expressions ($$...$$).
+- Format **code** using Markdown blocks (e.g., ```python).
+- Retain headings/subheadings and use markdown tables if needed.
 
 Text to summarize:
 {text}
 """
-
-        # Use the new OpenAI client interface
-        completion = client.chat.completions.create(
-            model=model,
-            messages=[{
-                "role": "user",
-                "content": prompt
-            }],
-            temperature=0.3,
-        )
-
-        summary = completion.choices[0].message.content
-        st.success(f"Generated summary ({len(summary):,} characters)")
-        return summary
-    except Exception as e:
-        st.error(f"Error during summarization: {str(e)}")
-        return None
+    completion = client.chat.completions.create(
+        model=model,
+        messages=[{
+            "role": "user",
+            "content": prompt
+        }],
+        temperature=0.3,
+    )
+    return completion.choices[0].message.content
 
 
 def chunk_text(text, max_chunk_size=8000):
-    paragraphs = text.split("\n\n")
-    chunks = []
-    current_chunk = ""
-
-    for para in paragraphs:
-        if len(current_chunk) + len(para) < max_chunk_size:
-            current_chunk += para + "\n\n"
-        else:
-            chunks.append(current_chunk.strip())
-            current_chunk = para + "\n\n"
-    if current_chunk:
-        chunks.append(current_chunk.strip())
-    return chunks
+    return smart_chunk_text(text, max_chunk_size)
 
 
-def summarize_chunks(chunks, model="gpt-4o-mini"):
-    summaries = []
-    for i, chunk in enumerate(chunks):
-        st.info(f"Summarizing chunk {i+1} of {len(chunks)}...")
-        summary = summarize_with_llm(chunk, model)
-        if summary:
-            summaries.append(summary)
-    return summaries
-
-
-def summarize_merged_summary(summaries, model="gpt-4"):
-    combined = "\n\n".join(
-        [f"Part {i+1}:\n{s}" for i, s in enumerate(summaries)])
-    st.info("Merging chunk summaries into final summary...")
-    return summarize_with_llm(
-        f"Here are summaries of several sections:\n\n{combined}\n\nPlease combine them into a single cohesive summary.",
-        model)
-
-
-def render_summary(summary_text):
-    """
-    Renders summary text with special handling for math expressions and code blocks
-    """
-    # Split by display math blocks ($$...$$)
-    parts = re.split(r"(\$\$.*?\$\$)", summary_text, flags=re.DOTALL)
-    for part in parts:
-        if part.startswith("$$") and part.endswith("$$"):
-            math_expr = part.strip("$").strip()
-            st.latex(math_expr)
-        else:
-            st.markdown(part, unsafe_allow_html=True)
-
-
-def extract_sections_with_llm(doc, section_range, model="gpt-3.5-turbo"):
-    """
-    Fallback method that uses an LLM to identify section page ranges by analyzing the Table of Contents.
-    Then validates and adjusts the page numbers to match the actual content in the PDF.
-    """
+def extract_sections_with_llm(doc,
+                              section_range="",
+                              structure_insight=None,
+                              model="gpt-4o-mini",
+                              chapter_prefix=None):
     st.info("Attempting to locate sections using AI...")
 
-    # Check if processing should be stopped
     if hasattr(st.session_state,
                'processing_active') and not st.session_state.processing_active:
         st.warning("Section extraction interrupted")
         return {}, False
 
-    # Parse section range
-    if "–" in section_range:  # en dash
-        start_sec, end_sec = section_range.split("–")
-    elif "-" in section_range:  # regular hyphen
-        start_sec, end_sec = section_range.split("-")
-    else:
-        start_sec = end_sec = section_range  # Single section
+    if not section_range and chapter_prefix:
+        if not st.session_state.get("structure_insight"):
+            raise ValueError("Structure analysis not completed")
 
-    # Identify potential ToC pages
-    toc_pages = []
-    for i in range(len(doc)):
-        # Check if processing should be stopped
-        if hasattr(st.session_state, 'processing_active'
-                   ) and not st.session_state.processing_active:
-            st.warning("Section extraction interrupted")
+        chapter_ranges = st.session_state.structure_insight["chapter_ranges"]
+        if chapter_prefix not in chapter_ranges:
+            st.error(
+                f"Chapter {chapter_prefix} not found. Available chapters: {list(chapter_ranges.keys())}"
+            )
             return {}, False
 
-        text = doc[i].get_text()
-        if "Contents" in text or "Table of Contents" in text:
-            toc_pages.append(i)
-
-    if not toc_pages:
-        st.error("No Table of Contents found in the document.")
-        return {}, False
-
-    # Extract text from ToC pages
-    toc_text = "\n\n".join([doc[i].get_text() for i in toc_pages])
-
-    # Create the prompt
-    prompt = f"""The following is the Table of Contents from a textbook PDF.
-
-Please identify the starting pages for the following sections:
-{', '.join([start_sec, end_sec])}
-
-Return a mapping in this exact format:
-```
-section_number: start_page
-section_number: start_page
-...
-```
-
-If you can't find a section, indicate "Not found"
-
-Text:
-{toc_text}
-"""
-
-    try:
-        # Log the prompt for debugging
-        st.text_area("AI Prompt", prompt, height=200)
-
-        # Use the new OpenAI client interface
-        completion = client.chat.completions.create(
-            model=model,
-            messages=[{
-                "role": "user",
-                "content": prompt
-            }],
-            temperature=0.3,
+        start, end = chapter_ranges[chapter_prefix]
+        section_range = f"{start}–{end}"
+        st.info(
+            f"Auto-generated range for Chapter {chapter_prefix}: {section_range}"
         )
 
-        result = completion.choices[0].message.content
+    if "–" in section_range:
+        start_sec, end_sec = section_range.split("–")
+    elif "-" in section_range:
+        start_sec, end_sec = section_range.split("-")
+    else:
+        start_sec = end_sec = section_range.strip()
 
-        # Log the AI response for debugging
-        st.text_area("AI Response", result, height=200)
+    toc_pages = [
+        i for i in range(len(doc)) if any(
+            x in doc[i].get_text() for x in ["Contents", "Table of Contents"])
+    ]
+    toc_text = "\n\n".join([doc[i].get_text() for i in toc_pages])
 
-        st.info("AI response received. Extracting section locations...")
+    prompt = f"""
+You are helping extract specific sections from a textbook using its Table of Contents.
 
-        # Parse the LLM response to extract starting pages
-        section_pages = {}
+Identify the starting pages for the sections below:
+Sections: {start_sec}, {end_sec}
 
-        # Look for patterns like "16.1: start_page"
-        section_pattern = re.compile(r'([0-9.]+):\s*(\d+)')
-        matches = section_pattern.findall(result)
+Follow rules:
+- Match exact section numbers (e.g., 6.1 not 5.6.1).
+- Use TOC layout patterns from below.
+- Include page numbers only if confident.
 
-        for match in matches:
-            section = match[0]
-            start_page = int(match[1])
-            section_pages[section] = start_page
+STRUCTURE INSIGHT:
+{structure_insight or 'No structure insight provided'}
 
-        if section_pages:
-            st.success(f"AI found starting pages: {section_pages}")
+TOC:
+{toc_text}
 
-            # Store original ToC page numbers for later calculations
-            toc_start_page = section_pages.get(start_sec, None)
-            toc_end_page = section_pages.get(end_sec, None)
+Return JSON:
+```
+section_number: start_page
+section_number: start_page
+```
+"""
 
-            if toc_start_page is None or toc_end_page is None:
-                st.warning("Missing page information for one or more sections")
-                return section_pages, True
+    completion = client.chat.completions.create(
+        model=model,
+        messages=[{
+            "role": "user",
+            "content": prompt
+        }],
+        temperature=0.3,
+    )
+    result = completion.choices[0].message.content
+    st.text_area("LLM TOC Extraction", result, height=300)
 
-            # Calculate the length of the section in ToC pages
-            toc_section_length = toc_end_page - toc_start_page
+    section_pages = {}
+    matches = re.findall(r'([0-9.]+):\s*(\d+)', result)
+    for sec, page in matches:
+        if sec in [start_sec, end_sec]:
+            section_pages[sec] = int(page)
 
-            # Validate and search for correct pages
-            validated_pages = validate_and_adjust_pages(
-                doc, section_pages, start_sec)
-            if validated_pages:
-                # Get the actual starting page that was found
-                actual_start_page = validated_pages.get(start_sec, None)
-
-                if actual_start_page is not None:
-                    # Calculate actual end page using offset and section length
-                    actual_end_page = actual_start_page + toc_section_length
-                    st.success(
-                        f"Calculated actual page range: {actual_start_page+1} to {actual_end_page+1}"
-                    )
-
-                    # Build proper section data structure
-                    sections = {}
-                    for section in [start_sec, end_sec]:
-                        if section == start_sec:
-                            start_pos = 0  # Placeholder
-                            end_pos = 1  # Placeholder
-                            page = actual_start_page
-                            end_page = actual_end_page if section == end_sec else None
-                        else:
-                            page = actual_end_page
-                            end_page = None
-                            start_pos = 0  # Placeholder
-                            end_pos = 1  # Placeholder
-
-                        # Extract text for this section
-                        section_text = ""
-                        if section == start_sec and end_sec != start_sec:
-                            # For start section, get text from this page to end section
-                            for p in range(actual_start_page,
-                                           actual_end_page + 1):
-                                section_text += doc[p].get_text()
-                        else:
-                            # For other sections, just get text from their page
-                            section_text = doc[page].get_text()
-
-                        # Create section entry with required fields for summarization
-                        sections[section] = {
-                            "title":
-                            f"Section {section}",
-                            "content":
-                            section_text,
-                            "start_pos":
-                            start_pos,
-                            "end_pos":
-                            end_pos,
-                            "pdf_start_page":
-                            page + 1,  # +1 for 1-indexed display
-                            "pdf_end_page":
-                            (end_page + 1) if end_page is not None else None,
-                            "approx_pages":
-                            f"{page+1}-{end_page+1}"
-                            if end_page is not None else f"{page+1}"
-                        }
-
-                    return sections, True
-                else:
-                    st.warning(
-                        "Couldn't find actual start page. Using AI-suggested pages instead."
-                    )
-            else:
-                st.warning(
-                    "Couldn't validate section pages. Using AI-suggested pages instead."
-                )
-
-            # Fallback: Use the original section_pages but convert to proper format
-            sections = {}
-            for section, page in section_pages.items():
-                if section == end_sec and start_sec in section_pages:
-                    # Calculate end page based on ToC
-                    start_page = section_pages[start_sec]
-                    section_length = page - start_page
-                    end_page = page
-                else:
-                    end_page = None
-
-                sections[section] = {
-                    "title":
-                    f"Section {section}",
-                    "content":
-                    doc[page].get_text(),
-                    "start_pos":
-                    0,  # Placeholder
-                    "end_pos":
-                    1,  # Placeholder
-                    "pdf_start_page":
-                    page + 1,  # +1 for 1-indexed display
-                    "pdf_end_page":
-                    (end_page + 1) if end_page is not None else None,
-                    "approx_pages":
-                    f"{page+1}-{end_page+1}"
-                    if end_page is not None else f"{page+1}"
-                }
-
-            return sections, True
-        else:
-            st.warning("AI couldn't identify section starting pages")
-            return {}, False
-
-    except Exception as e:
-        st.error(f"Error using AI to identify sections: {str(e)}")
+    if not section_pages:
+        st.warning("No valid section pages extracted.")
         return {}, False
+
+    # ✅ VALIDATE PAGE ACCURACY
+    validated_pages = validate_and_adjust_pages(doc, section_pages, start_sec)
+    if not validated_pages:
+        st.warning("Page validation failed. Using LLM-suggested TOC pages.")
+        validated_pages = section_pages
+
+    sections = {}
+    for sec, page in validated_pages.items():
+        section_text = doc[page].get_text()
+        sections[sec] = {
+            "title": f"Section {sec}",
+            "content": section_text,
+            "pdf_start_page": page + 1
+        }
+
+    return sections, True
 
 
 def validate_and_adjust_pages(doc, section_pages, start_section):
@@ -494,8 +220,12 @@ def validate_and_adjust_pages(doc, section_pages, start_section):
 
         st.info(f"Validating section {section} (ToC suggests page {toc_page})")
 
-        # Create regex pattern to find this specific section number
-        pattern = fr"\b{re.escape(section)}\b\s+"
+        # Create more precise regex pattern to find this specific section number and avoid subsections
+        # This uses word boundaries and negative lookbehind to ensure we don't match subsections
+        pattern = fr"(?<![0-9\.])(?:\b|^)({re.escape(section)})(?:\s+|\.\s+)"
+
+        # Also create a header pattern to look for typical section heading formats
+        header_pattern = fr"(?:Section|Chapter)?\s*{re.escape(section)}(?:\s+|\.\s+)([^\n\r]+)"
 
         # Initial search range: +/- 20 pages from ToC suggestion
         search_start = max(0, toc_page - 20)
@@ -516,9 +246,25 @@ def validate_and_adjust_pages(doc, section_pages, start_section):
             search_range = range(max(0, mid - 2), min(total_pages, mid + 3))
             for page_num in search_range:
                 page_text = doc[page_num].get_text()
-                if re.search(pattern, page_text):
+
+                # First try the stricter pattern
+                match = re.search(pattern, page_text)
+                if match:
+                    matched_section = match.group(1)
+                    # Double check that we matched the exact section number
+                    if matched_section == section:
+                        st.success(
+                            f"Found section {section} on page {page_num+1} (PDF page)"
+                        )
+                        found_page = page_num
+                        break
+
+                # If stricter pattern didn't match, try the header pattern
+                match = re.search(header_pattern, page_text)
+                if match:
+                    # We found something that looks like a section header
                     st.success(
-                        f"Found section {section} on page {page_num+1} (PDF page)"
+                        f"Found section {section} header on page {page_num+1} (PDF page)"
                     )
                     found_page = page_num
                     break
@@ -534,23 +280,84 @@ def validate_and_adjust_pages(doc, section_pages, start_section):
             # This is a heuristic - if we don't find pattern, check if page has
             # lower-numbered sections (search higher) or higher-numbered sections (search lower)
             if section == start_section:
-                # For first section, look for any section patterns
-                mid_section_match = re.search(r"\b(\d+\.\d+)\b", mid_text)
-                if mid_section_match:
-                    mid_section = mid_section_match.group(1)
-                    # Compare section numbers numerically
-                    if float(mid_section.replace(' ', '')) < float(
-                            section.replace(' ', '')):
-                        search_start = mid + 1  # Search higher
+                # Extract all section-like numbers from the page
+                # We're looking for patterns like "X.Y" where X and Y are numbers
+                section_matches = re.findall(r'\b(\d+\.\d+)\b', mid_text)
+
+                if section_matches:
+                    # Check if any extracted sections match our target exactly
+                    exact_match = section in section_matches
+                    if exact_match:
+                        # We found our section but didn't catch it earlier - check this page more carefully
+                        st.info(
+                            f"Found section number but missed the heading pattern, rechecking page {mid+1}"
+                        )
+                        found_page = mid
+                        break
+
+                    # Get numeric representation of our target section (e.g., 6.1 -> 6.1)
+                    section_parts = [
+                        float(part) for part in section.split('.')
+                    ]
+                    section_num = section_parts[0] + 0.1 * section_parts[
+                        1] if len(section_parts) > 1 else float(
+                            section_parts[0])
+
+                    # Compare with sections on the current page
+                    page_sections = []
+                    for sec in section_matches:
+                        # Skip subsections (like 5.6.1) by checking the format
+                        if sec.count('.') > 1:
+                            continue
+
+                        sec_parts = [float(part) for part in sec.split('.')]
+                        if len(sec_parts) > 1:
+                            page_sections.append(sec_parts[0] +
+                                                 0.1 * sec_parts[1])
+                        else:
+                            page_sections.append(float(sec_parts[0]))
+
+                    if page_sections:
+                        max_page_section = max(page_sections)
+                        min_page_section = min(page_sections)
+
+                        if min_page_section > section_num:
+                            # All sections on this page come after our target
+                            search_end = mid - 1  # Search lower
+                        elif max_page_section < section_num:
+                            # All sections on this page come before our target
+                            search_start = mid + 1  # Search higher
+                        else:
+                            # Our section should be on this page or nearby
+                            # Try a more detailed linear search of adjacent pages
+                            found = False
+                            for adj_page in range(max(0, mid - 3),
+                                                  min(total_pages, mid + 4)):
+                                adj_text = doc[adj_page].get_text()
+                                if re.search(pattern, adj_text) or re.search(
+                                        header_pattern, adj_text):
+                                    found_page = adj_page
+                                    found = True
+                                    break
+
+                            if found:
+                                break
+
+                            # If still not found, expand search range
+                            search_start = max(0, toc_page - 40)
+                            search_end = min(total_pages - 1, toc_page + 40)
                     else:
-                        search_end = mid - 1  # Search lower
+                        # No valid sections on this page, try linear search
+                        search_start = max(0, mid - 40)
+                        search_end = min(total_pages - 1, mid + 40)
                 else:
-                    # If no section found, try both directions
+                    # No sections found on this page, try a wider search
                     # First try higher pages (more common)
                     higher_found = False
                     for page_num in range(mid + 3, min(total_pages, mid + 10)):
                         page_text = doc[page_num].get_text()
-                        if re.search(pattern, page_text):
+                        if re.search(pattern, page_text) or re.search(
+                                header_pattern, page_text):
                             found_page = page_num
                             higher_found = True
                             break
@@ -559,7 +366,8 @@ def validate_and_adjust_pages(doc, section_pages, start_section):
                         # Then try lower pages
                         for page_num in range(max(0, mid - 10), mid - 2):
                             page_text = doc[page_num].get_text()
-                            if re.search(pattern, page_text):
+                            if re.search(pattern, page_text) or re.search(
+                                    header_pattern, page_text):
                                 found_page = page_num
                                 break
 
@@ -575,7 +383,8 @@ def validate_and_adjust_pages(doc, section_pages, start_section):
                     # If we haven't found the page yet, try a linear search as fallback
                     for page_num in range(search_start, search_end + 1):
                         page_text = doc[page_num].get_text()
-                        if re.search(pattern, page_text):
+                        if re.search(pattern, page_text) or re.search(
+                                header_pattern, page_text):
                             found_page = page_num
                             break
                 break  # Exit while loop if we're not on the first section
@@ -602,6 +411,34 @@ def validate_and_adjust_pages(doc, section_pages, start_section):
                 validated_pages[section] = page + offset
 
     return validated_pages
+
+
+def render_summary(summary):
+    """Display the summary with proper Markdown formatting"""
+    if not summary:
+        st.warning("No summary content to display")
+        return
+
+    with st.container():
+        st.markdown(summary, unsafe_allow_html=False)
+
+        # Add some visual separation
+        st.markdown("---")
+        st.caption("Summary generated by Fast Reader")
+
+
+def extract_pdf_range(pdf_file, start_page, end_page):
+    doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
+    output = fitz.open()  # New empty PDF
+
+    for i in range(start_page - 1, end_page):  # Pages are 0-indexed
+        output.insert_pdf(doc, from_page=i, to_page=i)
+
+    buffer = io.BytesIO()
+    output.save(buffer)
+    output.close()
+    buffer.seek(0)
+    return buffer
 
 
 # --- Streamlit UI ---
